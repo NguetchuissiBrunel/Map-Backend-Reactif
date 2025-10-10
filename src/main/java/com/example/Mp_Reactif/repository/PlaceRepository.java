@@ -19,7 +19,6 @@ public class PlaceRepository {
     public Flux<Place> findByNameContaining(String name) {
         String sql = "SELECT id, nom, ST_X(geom) as lng, ST_Y(geom) as lat FROM lieux " +
                 "WHERE lower(nom) ILIKE :name " +
-                "AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(11.4, 3.75), ST_Point(11.6, 3.95)), 4326), geom) " +
                 "LIMIT 10";
         return databaseClient.sql(sql)
                 .bind("name", "%" + name + "%")
@@ -33,8 +32,7 @@ public class PlaceRepository {
 
     public Mono<Place> findPlaceByExactName(String name) {
         String sql = "SELECT id, nom, ST_X(geom) as lng, ST_Y(geom) as lat FROM lieux " +
-                "WHERE lower(nom) = :name " +
-                "AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(11.4, 3.75), ST_Point(11.6, 3.95)), 4326), geom)";
+                "WHERE lower(nom) = :name ";
         return databaseClient.sql(sql)
                 .bind("name", name)
                 .map((row, metadata) -> {
@@ -49,7 +47,6 @@ public class PlaceRepository {
     public Mono<Place> findClosestPlace(double lat, double lng) {
         String sql = "SELECT id, nom, ST_X(geom) as lng, ST_Y(geom) as lat " +
                 "FROM lieux " +
-                "WHERE ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(11.4, 3.75), ST_Point(11.6, 3.95)), 4326), geom) " +
                 "ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) LIMIT 1";
         return databaseClient.sql(sql)
                 .bind("lng", lng)

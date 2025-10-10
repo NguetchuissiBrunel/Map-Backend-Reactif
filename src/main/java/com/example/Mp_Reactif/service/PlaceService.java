@@ -54,11 +54,9 @@ public class PlaceService {
                 .uri(uriBuilder -> {
                     java.net.URI uri = uriBuilder
                             .path("/search")
-                            .queryParam("q", name + ", Yaoundé")
+                            .queryParam("q", name)
                             .queryParam("format", "json")
                             .queryParam("limit", 1)
-                            .queryParam("bounded", 1)
-                            .queryParam("viewbox", "11.4,3.95,11.6,3.75")
                             .queryParam("accept-language", "fr")
                             .build();
                     LOGGER.info("URL OSM : " + uri.toString());
