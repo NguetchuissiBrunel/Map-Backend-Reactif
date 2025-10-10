@@ -33,7 +33,6 @@ public class PlaceService {
         return placeRepository.findByNameContaining(normalizedName)
                 .switchIfEmpty(
                         searchPlaceInOSM(name)
-                                .filter(osmPlace -> isWithinYaounde(osmPlace.getCoordinates().getLat(), osmPlace.getCoordinates().getLng()))
                                 .flatMap(osmPlace ->
                                         placeRepository.savePlace(osmPlace)
                                                 .then(Mono.just(osmPlace)))
@@ -81,11 +80,6 @@ public class PlaceService {
                 });
     }
 
-    private boolean isWithinYaounde(double lat, double lng) {
-        boolean within = lat >= 3.75 && lat <= 3.95 && lng >= 11.4 && lng <= 11.6;
-        LOGGER.info("Validation Yaoundé : lat=" + lat + ", lng=" + lng + ", dans Yaoundé=" + within);
-        return within;
-    }
 
     private String normalizeName(String name) {
         if (name == null) return "";
