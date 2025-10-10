@@ -16,12 +16,6 @@ public class PlaceService {
 
     private static final Logger LOGGER = Logger.getLogger(PlaceService.class.getName());
 
-    // Bornes du Cameroun
-    private static final double CAMEROON_MIN_LAT = 1.65;
-    private static final double CAMEROON_MAX_LAT = 13.08;
-    private static final double CAMEROON_MIN_LNG = 8.45;
-    private static final double CAMEROON_MAX_LNG = 16.19;
-
     private final PlaceRepository placeRepository;
     private final WebClient webClient;
 
@@ -36,11 +30,10 @@ public class PlaceService {
         }
         String normalizedName = normalizeName(name);
         LOGGER.info("Recherche dans la base pour : " + normalizedName + " (original: " + name + ")");
-
         return placeRepository.findByNameContaining(normalizedName)
                 .switchIfEmpty(
                         searchPlaceInOSM(name)
-                                .filter(place -> isInCameroon(place.getCoordinates()))
+                                .filter(osmPlace -> isWithinCameroon(osmPlace.getCoordinates().getLat(), osmPlace.getCoordinates().getLng()))
                                 .flatMap(osmPlace ->
                                         placeRepository.savePlace(osmPlace)
                                                 .then(Mono.just(osmPlace)))
@@ -53,12 +46,6 @@ public class PlaceService {
         if (Double.isNaN(lat) || Double.isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
             return Mono.error(new IllegalArgumentException("Coordonnées invalides : latitude doit être entre -90 et 90, longitude entre -180 et 180"));
         }
-
-        // Vérifier que les coordonnées sont au Cameroun
-        if (!isInCameroon(lat, lng)) {
-            return Mono.error(new IllegalArgumentException("Les coordonnées doivent être situées au Cameroun"));
-        }
-
         return placeRepository.findClosestPlace(lat, lng);
     }
 
@@ -67,12 +54,12 @@ public class PlaceService {
                 .uri(uriBuilder -> {
                     java.net.URI uri = uriBuilder
                             .path("/search")
-                            .queryParam("q", name + ", Cameroun") // Forcer la recherche au Cameroun
+                            .queryParam("q", name + ", Cameroon")
                             .queryParam("format", "json")
                             .queryParam("limit", 1)
-                            .queryParam("accept-language", "fr")
-                            .queryParam("viewbox", "8.45,1.65,16.19,13.08") // Limiter à la bbox du Cameroun
                             .queryParam("bounded", 1)
+                            .queryParam("viewbox", "8.4,13.08,16.2,1.65")
+                            .queryParam("accept-language", "fr")
                             .build();
                     LOGGER.info("URL OSM : " + uri.toString());
                     return uri;
@@ -96,18 +83,10 @@ public class PlaceService {
                 });
     }
 
-    // Méthode pour vérifier si les coordonnées sont au Cameroun
-    private boolean isInCameroon(Coordinates coords) {
-        return coords.getLat() >= CAMEROON_MIN_LAT &&
-                coords.getLat() <= CAMEROON_MAX_LAT &&
-                coords.getLng() >= CAMEROON_MIN_LNG &&
-                coords.getLng() <= CAMEROON_MAX_LNG;
-    }
-
-    // Surcharge pour les coordonnées directes
-    private boolean isInCameroon(double lat, double lng) {
-        return lat >= CAMEROON_MIN_LAT && lat <= CAMEROON_MAX_LAT &&
-                lng >= CAMEROON_MIN_LNG && lng <= CAMEROON_MAX_LNG;
+    private boolean isWithinCameroon(double lat, double lng) {
+        boolean within = lat >= 1.65 && lat <= 13.08 && lng >= 8.4 && lng <= 16.2;
+        LOGGER.info("Validation Cameroun : lat=" + lat + ", lng=" + lng + ", dans Cameroun=" + within);
+        return within;
     }
 
     private String normalizeName(String name) {

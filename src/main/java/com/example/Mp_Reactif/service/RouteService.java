@@ -20,12 +20,6 @@ import java.util.List;
 @Service
 public class RouteService {
 
-    // Bornes du Cameroun
-    private static final double CAMEROON_MIN_LAT = 1.65;
-    private static final double CAMEROON_MAX_LAT = 13.08;
-    private static final double CAMEROON_MIN_LNG = 8.45;
-    private static final double CAMEROON_MAX_LNG = 16.19;
-
     @Autowired
     private ConnectionFactory connectionFactory;
 
@@ -37,10 +31,14 @@ public class RouteService {
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
+    // Validation des coordonnées dans les limites du Cameroun
+    private boolean isWithinCameroon(double lat, double lng) {
+        return lat >= 1.65 && lat <= 13.08 && lng >= 8.4 && lng <= 16.2;
+    }
+
     private Mono<Long> findNearestNode(Point point) {
-        // Vérifier que le point est au Cameroun
-        if (!isInCameroon(point.getLat(), point.getLng())) {
-            return Mono.error(new Exception("Point hors du Cameroun"));
+        if (!isWithinCameroon(point.getLat(), point.getLng())) {
+            return Mono.error(new IllegalArgumentException("Les coordonnées doivent être situées au Cameroun (lat: 1.65 à 13.08, lng: 8.4 à 16.2)"));
         }
 
         String roadNodeQuery = """
@@ -50,7 +48,7 @@ public class RouteService {
             ) as distance
             FROM routes
             WHERE source IS NOT NULL
-            AND ST_Within(geom, ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326))
+            AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)
             UNION
             SELECT DISTINCT target as id, ST_Distance(
                 ST_Transform(geom, 3857),
@@ -58,7 +56,7 @@ public class RouteService {
             ) as distance
             FROM routes
             WHERE target IS NOT NULL
-            AND ST_Within(geom, ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326))
+            AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)
             ORDER BY distance
             LIMIT 1
         """;
@@ -67,7 +65,7 @@ public class RouteService {
             SELECT id
             FROM lieux
             WHERE geom IS NOT NULL
-            AND ST_Within(geom, ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326))
+            AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)
             ORDER BY geom <-> ST_SetSRID(ST_Point(:lng, :lat), 4326)
             LIMIT 1
         """;
@@ -76,30 +74,22 @@ public class RouteService {
                 .flatMap(connection -> Mono.from(connection.createStatement(roadNodeQuery)
                                 .bind("lng", point.getLng())
                                 .bind("lat", point.getLat())
-                                .bind("minLng", CAMEROON_MIN_LNG)
-                                .bind("minLat", CAMEROON_MIN_LAT)
-                                .bind("maxLng", CAMEROON_MAX_LNG)
-                                .bind("maxLat", CAMEROON_MAX_LAT)
                                 .execute())
                         .flatMap(result -> Mono.from(result.map((row, metadata) -> row.get("id", Long.class))))
                         .switchIfEmpty(Mono.from(connection.createStatement(placeQuery)
                                         .bind("lng", point.getLng())
                                         .bind("lat", point.getLat())
-                                        .bind("minLng", CAMEROON_MIN_LNG)
-                                        .bind("minLat", CAMEROON_MIN_LAT)
-                                        .bind("maxLng", CAMEROON_MAX_LNG)
-                                        .bind("maxLat", CAMEROON_MAX_LAT)
                                         .execute())
                                 .flatMap(result -> Mono.from(result.map((row, metadata) -> row.get("id", Long.class)))))
                         .doFinally(signal -> Mono.from(connection.close())))
-                .switchIfEmpty(Mono.error(new Exception("No node found near the provided coordinates")));
+                .switchIfEmpty(Mono.error(new Exception("Aucun nœud trouvé près des coordonnées fournies")));
     }
 
     private Mono<List<Route>> getRouteFromOSRM(List<Point> points, String mode, String startPlaceName, String endPlaceName) {
-        // Vérifier que tous les points sont au Cameroun
+        // Vérifier que tous les points sont dans le Cameroun
         for (Point point : points) {
-            if (!isInCameroon(point.getLat(), point.getLng())) {
-                return Mono.error(new Exception("Tous les points doivent être au Cameroun"));
+            if (!isWithinCameroon(point.getLat(), point.getLng())) {
+                return Mono.error(new IllegalArgumentException("Un des points est hors des limites du Cameroun"));
             }
         }
 
@@ -118,12 +108,12 @@ public class RouteService {
                 .bodyToMono(String.class)
                 .flatMap(jsonResponse -> {
                     if (jsonResponse == null || jsonResponse.trim().isEmpty()) {
-                        return Mono.error(new Exception("Empty response from OSRM"));
+                        return Mono.error(new Exception("Réponse vide de OSRM"));
                     }
                     try {
                         JsonNode data = objectMapper.readTree(jsonResponse);
                         if (data.has("code") && !"Ok".equals(data.get("code").asText())) {
-                            return Mono.error(new Exception("OSRM error: " + data.get("message").asText("Unknown error")));
+                            return Mono.error(new Exception("Erreur OSRM : " + data.get("message").asText("Erreur inconnue")));
                         }
 
                         List<Route> routes = new ArrayList<>();
@@ -138,8 +128,12 @@ public class RouteService {
                                         for (int i = 0; i < coordinatesNode.size(); i++) {
                                             JsonNode coord = coordinatesNode.get(i);
                                             if (coord.isArray() && coord.size() >= 2) {
-                                                routeGeometry.append(coord.get(0).asDouble()).append(" ")
-                                                        .append(coord.get(1).asDouble());
+                                                double lng = coord.get(0).asDouble();
+                                                double lat = coord.get(1).asDouble();
+                                                if (!isWithinCameroon(lat, lng)) {
+                                                    continue; // Ignorer les coordonnées hors Cameroun
+                                                }
+                                                routeGeometry.append(lng).append(" ").append(lat);
                                                 if (i < coordinatesNode.size() - 1) {
                                                     routeGeometry.append(", ");
                                                 }
@@ -160,8 +154,12 @@ public class RouteService {
                                                         for (int i = 0; i < coordinatesNode.size(); i++) {
                                                             JsonNode coord = coordinatesNode.get(i);
                                                             if (coord.isArray() && coord.size() >= 2) {
-                                                                stepGeometry.append(coord.get(0).asDouble()).append(" ")
-                                                                        .append(coord.get(1).asDouble());
+                                                                double lng = coord.get(0).asDouble();
+                                                                double lat = coord.get(1).asDouble();
+                                                                if (!isWithinCameroon(lat, lng)) {
+                                                                    continue; // Ignorer les coordonnées hors Cameroun
+                                                                }
+                                                                stepGeometry.append(lng).append(" ").append(lat);
                                                                 if (i < coordinatesNode.size() - 1) {
                                                                     stepGeometry.append(", ");
                                                                 }
@@ -174,8 +172,8 @@ public class RouteService {
                                                 RouteStep routeStep = new RouteStep();
                                                 routeStep.setGeometry(stepGeometry.toString());
                                                 String instruction = step.has("maneuver") && step.get("maneuver").has("instruction")
-                                                        ? step.get("maneuver").get("instruction").asText("Step")
-                                                        : "Step";
+                                                        ? step.get("maneuver").get("instruction").asText("Étape")
+                                                        : "Étape";
                                                 routeStep.setSource(instruction);
                                                 routeStep.setTarget(instruction);
                                                 routeStep.setDistance(step.has("distance") ? step.get("distance").asDouble() : 0.0);
@@ -189,8 +187,8 @@ public class RouteService {
                                 if (steps.isEmpty() && !routeGeometry.toString().equals("LINESTRING(")) {
                                     RouteStep defaultStep = new RouteStep();
                                     defaultStep.setGeometry(routeGeometry.toString());
-                                    defaultStep.setSource("Start");
-                                    defaultStep.setTarget("End");
+                                    defaultStep.setSource("Départ");
+                                    defaultStep.setTarget("Arrivée");
                                     defaultStep.setDistance(routeNode.has("distance") ? routeNode.get("distance").asDouble() : 0.0);
                                     defaultStep.setDuration(routeNode.has("duration") ? routeNode.get("duration").asDouble() : 0.0);
                                     steps.add(defaultStep);
@@ -208,11 +206,11 @@ public class RouteService {
                         }
                         return Mono.just(routes);
                     } catch (Exception e) {
-                        return Mono.error(new Exception("Error parsing OSRM response: " + e.getMessage()));
+                        return Mono.error(new Exception("Erreur lors de l'analyse de la réponse OSRM : " + e.getMessage()));
                     }
                 })
                 .onErrorResume(e -> {
-                    System.err.println("Error with OSRM: " + e.getMessage());
+                    System.err.println("Erreur avec OSRM : " + e.getMessage());
                     return Mono.just(new ArrayList<>());
                 });
     }
@@ -220,15 +218,15 @@ public class RouteService {
     public Mono<RouteResponse> routeWithPgRouting(List<Point> points, String mode, String startPlaceName, String endPlaceName) {
         if (points.size() != 2) {
             RouteResponse response = new RouteResponse();
-            response.setError("Exactly two points are required for routing");
+            response.setError("Exactement deux points sont requis pour le calcul d'itinéraire");
             return Mono.just(response);
         }
 
-        // VALIDATION : Vérifier que les points sont au Cameroun
+        // Vérifier que les points sont dans le Cameroun
         for (Point point : points) {
-            if (!isInCameroon(point.getLat(), point.getLng())) {
+            if (!isWithinCameroon(point.getLat(), point.getLng())) {
                 RouteResponse response = new RouteResponse();
-                response.setError("Les points doivent être situés au Cameroun");
+                response.setError("Un des points est hors des limites du Cameroun");
                 return Mono.just(response);
             }
         }
@@ -238,16 +236,14 @@ public class RouteService {
                     Long source = tuple.getT1();
                     Long target = tuple.getT2();
                     if (source.equals(target)) {
-                        return Mono.error(new Exception("Source and target nodes are the same"));
+                        return Mono.error(new Exception("Les nœuds source et cible sont identiques"));
                     }
 
                     String nodeValidationQuery = """
                         SELECT COUNT(*) as count FROM (
                             SELECT source as node FROM routes WHERE source = :source OR target = :source
-                            AND ST_Within(geom, ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326))
                             UNION
                             SELECT target as node FROM routes WHERE source = :target OR target = :target
-                            AND ST_Within(geom, ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326))
                         ) nodes
                     """;
 
@@ -255,16 +251,12 @@ public class RouteService {
                             .flatMap(connection -> Mono.from(connection.createStatement(nodeValidationQuery)
                                             .bind("source", source)
                                             .bind("target", target)
-                                            .bind("minLng", CAMEROON_MIN_LNG)
-                                            .bind("minLat", CAMEROON_MIN_LAT)
-                                            .bind("maxLng", CAMEROON_MAX_LNG)
-                                            .bind("maxLat", CAMEROON_MAX_LAT)
                                             .execute())
                                     .flatMap(result -> Mono.from(result.map((row, metadata) -> row.get("count", Integer.class))))
                                     .doFinally(signal -> Mono.from(connection.close())))
                             .flatMap(nodeCount -> {
                                 if (nodeCount == null || nodeCount == 0) {
-                                    return Mono.error(new Exception("Nodes not found in road network"));
+                                    return Mono.error(new Exception("Nœuds non trouvés dans le réseau routier"));
                                 }
 
                                 double vitesse = mode.equals("driving") ? 25 : mode.equals("walking") ? 2 : 8;
@@ -273,7 +265,7 @@ public class RouteService {
                                     WITH chemins AS (
                                         SELECT path_id, path_seq, node, edge, cost, agg_cost
                                         FROM pgr_ksp(
-                                            'SELECT id, source, target, cost, reverse_cost FROM routes WHERE cost IS NOT NULL AND cost > 0 AND ST_Within(geom, ST_MakeEnvelope(:minLng, :minLat, :maxLng, :maxLat, 4326))',
+                                            'SELECT id, source, target, cost, reverse_cost FROM routes WHERE cost IS NOT NULL AND cost > 0 AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)',
                                             :source, :target, 3, false
                                         )
                                     )
@@ -289,6 +281,7 @@ public class RouteService {
                                     LEFT JOIN lieux l1 ON r.source = l1.id
                                     LEFT JOIN lieux l2 ON r.target = l2.id
                                     WHERE c.edge > 0
+                                    AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), r.geom)
                                     ORDER BY c.path_id, c.path_seq
                                 """;
 
@@ -296,10 +289,6 @@ public class RouteService {
                                         .flatMapMany(connection -> Flux.from(connection.createStatement(query)
                                                         .bind("source", source)
                                                         .bind("target", target)
-                                                        .bind("minLng", CAMEROON_MIN_LNG)
-                                                        .bind("minLat", CAMEROON_MIN_LAT)
-                                                        .bind("maxLng", CAMEROON_MAX_LNG)
-                                                        .bind("maxLat", CAMEROON_MAX_LAT)
                                                         .execute())
                                                 .flatMap(result -> Flux.from(result.map((row, metadata) -> {
                                                     RouteStep step = new RouteStep();
@@ -384,7 +373,7 @@ public class RouteService {
 
                                             RouteResponse response = new RouteResponse();
                                             if (routes.isEmpty()) {
-                                                response.setError("No routes found by pgRouting");
+                                                response.setError("Aucun itinéraire trouvé par pgRouting");
                                             } else {
                                                 response.setRoutes(routes);
                                             }
@@ -397,23 +386,21 @@ public class RouteService {
                             RouteResponse response = new RouteResponse();
                             response.setRoutes(routes);
                             if (routes.isEmpty()) {
-                                response.setError("No route found with local and external methods");
+                                response.setError("Aucun itinéraire trouvé avec les méthodes locales et externes");
                             }
                             return response;
                         }));
     }
 
     public Mono<RouteResponse> routeWithDetour(Point start, Point detour, Point end, String mode, String startPlaceName, String detourPlaceName, String endPlaceName) {
-        // VALIDATION : Vérifier que tous les points sont au Cameroun
-        if (!isInCameroon(start.getLat(), start.getLng()) ||
-                !isInCameroon(detour.getLat(), detour.getLng()) ||
-                !isInCameroon(end.getLat(), end.getLng())) {
+        String osrmMode = mode.equals("taxi") || mode.equals("bus") ? "driving" : mode.equals("moto") ? "cycling" : "driving";
+
+        // Vérifier que tous les points sont dans le Cameroun
+        if (!isWithinCameroon(start.getLat(), start.getLng()) || !isWithinCameroon(detour.getLat(), detour.getLng()) || !isWithinCameroon(end.getLat(), end.getLng())) {
             RouteResponse response = new RouteResponse();
-            response.setError("Tous les points doivent être situés au Cameroun");
+            response.setError("Un ou plusieurs points sont hors des limites du Cameroun");
             return Mono.just(response);
         }
-
-        String osrmMode = mode.equals("taxi") || mode.equals("bus") ? "driving" : mode.equals("moto") ? "cycling" : "driving";
 
         return Mono.zip(
                 getRouteFromOSRM(List.of(start, detour), osrmMode, startPlaceName, detourPlaceName),
@@ -424,12 +411,12 @@ public class RouteService {
 
             if (firstRoutes.isEmpty()) {
                 RouteResponse response = new RouteResponse();
-                response.setError("No route found for start to detour");
+                response.setError("Aucun itinéraire trouvé de départ à détour");
                 return Mono.just(response);
             }
             if (secondRoutes.isEmpty()) {
                 RouteResponse response = new RouteResponse();
-                response.setError("No route found for detour to end");
+                response.setError("Aucun itinéraire trouvé de détour à arrivée");
                 return Mono.just(response);
             }
 
@@ -459,9 +446,14 @@ public class RouteService {
                     for (String coordPair : coordPairs) {
                         String[] parts = coordPair.split(" ");
                         if (parts.length == 2) {
+                            double lng = Double.parseDouble(parts[0]);
+                            double lat = Double.parseDouble(parts[1]);
+                            if (!isWithinCameroon(lat, lng)) {
+                                continue; // Ignorer les coordonnées hors Cameroun
+                            }
                             List<Double> point = new ArrayList<>();
-                            point.add(Double.parseDouble(parts[0]));
-                            point.add(Double.parseDouble(parts[1]));
+                            point.add(lng);
+                            point.add(lat);
                             allCoordinates.add(point);
                         }
                     }
@@ -485,15 +477,9 @@ public class RouteService {
             return Mono.just(response);
         }).onErrorResume(e -> {
             RouteResponse response = new RouteResponse();
-            response.setError("Unable to calculate route with detour: " + e.getMessage());
+            response.setError("Impossible de calculer l'itinéraire avec détour : " + e.getMessage());
             return Mono.just(response);
         });
-    }
-
-    // Méthode utilitaire pour vérifier les coordonnées
-    private boolean isInCameroon(double lat, double lng) {
-        return lat >= CAMEROON_MIN_LAT && lat <= CAMEROON_MAX_LAT &&
-                lng >= CAMEROON_MIN_LNG && lng <= CAMEROON_MAX_LNG;
     }
 
     private static class RouteStepWrapper {
