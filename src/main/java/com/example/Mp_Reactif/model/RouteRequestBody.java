@@ -5,17 +5,12 @@ import java.util.List;
 public class RouteRequestBody {
     private List<Point> points;
     private String mode;
-
-    public String getStartPlaceName() {
-        return startPlaceName;
-    }
-
-    public String getEndPlaceName() {
-        return endPlaceName;
-    }
-
     private String startPlaceName;
     private String endPlaceName;
+
+    // Constructeur par défaut REQUIS
+    public RouteRequestBody() {
+    }
 
     // Getters et setters
     public List<Point> getPoints() {
@@ -32,5 +27,21 @@ public class RouteRequestBody {
 
     public void setMode(String mode) {
         this.mode = mode;
+    }
+
+    public String getStartPlaceName() {
+        return startPlaceName;
+    }
+
+    public void setStartPlaceName(String startPlaceName) {
+        this.startPlaceName = startPlaceName;
+    }
+
+    public String getEndPlaceName() {
+        return endPlaceName;
+    }
+
+    public void setEndPlaceName(String endPlaceName) {
+        this.endPlaceName = endPlaceName;
     }
 }
