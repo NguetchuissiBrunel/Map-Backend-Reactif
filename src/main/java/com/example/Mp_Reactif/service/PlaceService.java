@@ -29,6 +29,27 @@ public class PlaceService {
         this.cacheService = cacheService;
     }
 
+    public Mono<String> getAllPlaceNamesFormatted() {
+        LOGGER.info("📋 Récupération de tous les noms de lieux depuis la base de données");
+
+        return placeRepository.findAllPlaceNames()
+                .collectList()
+                .map(names -> {
+                    if (names.isEmpty()) {
+                        return "";
+                    }
+
+                    StringBuilder sb = new StringBuilder();
+                    for (int i = 0; i < names.size(); i++) {
+                        sb.append(names.get(i));
+                        if (i < names.size() - 1) {
+                            sb.append(",\n");
+                        }
+                    }
+                    return sb.toString();
+                });
+    }
+
     public Flux<Place> searchPlaces(String name) {
         if (name == null || name.trim().isEmpty()) {
             return Flux.error(new IllegalArgumentException("Le paramètre name est requis"));

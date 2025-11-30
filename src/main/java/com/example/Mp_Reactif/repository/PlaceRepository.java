@@ -71,4 +71,10 @@ public class PlaceRepository {
                 .bind("lat", place.getCoordinates().getLat())
                 .then();
     }
+    public Flux<String> findAllPlaceNames() {
+        String sql = "SELECT nom FROM lieux ORDER BY nom";
+        return databaseClient.sql(sql)
+                .map((row, metadata) -> row.get("nom", String.class))
+                .all();
+    }
 }

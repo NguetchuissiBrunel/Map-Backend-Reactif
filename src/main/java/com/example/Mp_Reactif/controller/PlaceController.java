@@ -7,7 +7,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import reactor.core.publisher.Mono;
-
+import reactor.core.publisher.Flux;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -48,6 +48,11 @@ public class PlaceController {
                     response.put("error", "Erreur serveur");
                     return Mono.just(new ResponseEntity<>(response, HttpStatus.INTERNAL_SERVER_ERROR));
                 });
+    }
+
+    @GetMapping("/names")
+    public Mono<String> getAllPlaceNames() {
+        return placeService.getAllPlaceNamesFormatted();
     }
 
     @GetMapping("/closest")
