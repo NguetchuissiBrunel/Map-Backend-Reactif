@@ -1,5 +1,6 @@
 package com.example.Mp_Reactif.service;
 
+import com.example.Mp_Reactif.event.PlaceSearchedEvent;
 import com.example.Mp_Reactif.model.Coordinates;
 import com.example.Mp_Reactif.model.Place;
 import com.example.Mp_Reactif.repository.PlaceRepository;
@@ -20,13 +21,16 @@ public class PlaceService {
     private final PlaceRepository placeRepository;
     private final WebClient webClient;
     private final AdaptiveRedisCacheService cacheService;
+    private final EventProducer eventProducer;
 
     public PlaceService(PlaceRepository placeRepository,
-                        WebClient.Builder webClientBuilder,
-                        AdaptiveRedisCacheService cacheService) {
+            WebClient.Builder webClientBuilder,
+            AdaptiveRedisCacheService cacheService,
+            @org.springframework.beans.factory.annotation.Autowired(required = false) EventProducer eventProducer) {
         this.placeRepository = placeRepository;
         this.webClient = webClientBuilder.baseUrl("https://nominatim.openstreetmap.org").build();
         this.cacheService = cacheService;
+        this.eventProducer = eventProducer;
     }
 
     public Mono<String> getAllPlaceNamesFormatted() {
@@ -60,6 +64,11 @@ public class PlaceService {
 
         LOGGER.info("🔍 Recherche lieux: " + normalizedName);
 
+        // Publish event asynchronously
+        if (eventProducer != null) {
+            eventProducer.publishPlaceSearched(new PlaceSearchedEvent(normalizedName, 0)).subscribe();
+        }
+
         return cacheService.get(cacheKey, List.class)
                 .flatMapMany(cachedPlaces -> {
                     LOGGER.info("✅ CACHE HIT - Lieux depuis Redis Cloud: " + normalizedName);
@@ -67,9 +76,7 @@ public class PlaceService {
                             .cast(Place.class);
                 })
                 .switchIfEmpty(
-                        searchInDatabaseAndCache(normalizedName, cacheKey)
-                )
-                ;
+                        searchInDatabaseAndCache(normalizedName, cacheKey));
     }
 
     private Flux<Place> searchInDatabaseAndCache(String normalizedName, String cacheKey) {
@@ -79,12 +86,9 @@ public class PlaceService {
                                 .filter(osmPlace -> isWithinCameroon(
                                         osmPlace.getCoordinates().getLat(),
                                         osmPlace.getCoordinates().getLng()))
-                                .flatMap(osmPlace ->
-                                        placeRepository.savePlace(osmPlace)
-                                                .then(Mono.just(osmPlace)))
-                                .flatMapMany(savedPlace ->
-                                        placeRepository.findByNameContaining(normalizedName))
-                )
+                                .flatMap(osmPlace -> placeRepository.savePlace(osmPlace)
+                                        .then(Mono.just(osmPlace)))
+                                .flatMapMany(savedPlace -> placeRepository.findByNameContaining(normalizedName)))
                 .collectList()
                 .flatMapMany(places -> {
                     if (!places.isEmpty()) {
@@ -122,8 +126,7 @@ public class PlaceService {
                     String formattedName = normalizeName(osmPlace.getName());
                     return new Place(null, formattedName, new Coordinates(
                             Double.parseDouble(osmPlace.getLat()),
-                            Double.parseDouble(osmPlace.getLon())
-                    ));
+                            Double.parseDouble(osmPlace.getLon())));
                 })
                 .onErrorResume(e -> {
                     LOGGER.severe("Erreur lors de la requête OSM : " + e.getMessage());
@@ -136,7 +139,8 @@ public class PlaceService {
     }
 
     private String normalizeName(String name) {
-        if (name == null) return "";
+        if (name == null)
+            return "";
         String normalized = Normalizer.normalize(name, Normalizer.Form.NFD);
         return normalized.replaceAll("[\\p{M}]", "").toLowerCase().trim();
     }
@@ -147,13 +151,36 @@ public class PlaceService {
         private String name;
         private String display_name;
 
-        public String getLat() { return lat; }
-        public void setLat(String lat) { this.lat = lat; }
-        public String getLon() { return lon; }
-        public void setLon(String lon) { this.lon = lon; }
-        public String getName() { return name; }
-        public void setName(String name) { this.name = name; }
-        public String getDisplayName() { return display_name; }
-        public void setDisplayName(String display_name) { this.display_name = display_name; }
+        public String getLat() {
+            return lat;
+        }
+
+        public void setLat(String lat) {
+            this.lat = lat;
+        }
+
+        public String getLon() {
+            return lon;
+        }
+
+        public void setLon(String lon) {
+            this.lon = lon;
+        }
+
+        public String getName() {
+            return name;
+        }
+
+        public void setName(String name) {
+            this.name = name;
+        }
+
+        public String getDisplayName() {
+            return display_name;
+        }
+
+        public void setDisplayName(String display_name) {
+            this.display_name = display_name;
+        }
     }
 }

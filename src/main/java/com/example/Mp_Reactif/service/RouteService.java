@@ -1,5 +1,6 @@
 package com.example.Mp_Reactif.service;
 
+import com.example.Mp_Reactif.event.RouteCalculatedEvent;
 import com.example.Mp_Reactif.model.Point;
 import com.example.Mp_Reactif.model.Route;
 import com.example.Mp_Reactif.model.RouteResponse;
@@ -32,13 +33,17 @@ public class RouteService {
     @Autowired
     private AdaptiveRedisCacheService cacheService;
 
+    @Autowired(required = false)
+    private EventProducer eventProducer;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     // Variables pour stocker temporairement les noms des lieux
     private String currentStartPlaceName;
     private String currentEndPlaceName;
 
-    public Mono<RouteResponse> routeWithPgRouting(List<Point> points, String mode, String startPlaceName, String endPlaceName) {
+    public Mono<RouteResponse> routeWithPgRouting(List<Point> points, String mode, String startPlaceName,
+            String endPlaceName) {
         if (points.size() != 2) {
             return Mono.just(createErrorResponse("Exactement deux points sont requis"));
         }
@@ -55,12 +60,23 @@ public class RouteService {
 
         return cacheService.get(cacheKey, RouteResponse.class)
                 .switchIfEmpty(
-                        calculateRouteWithFallback(points, mode, cacheKey)
-                )
+                        calculateRouteWithFallback(points, mode, cacheKey))
                 .doOnNext(response -> {
                     if (response.getError() == null && !response.getRoutes().isEmpty()) {
                         double distance = response.getRoutes().get(0).getDistance();
+                        double duration = response.getRoutes().get(0).getDuration();
                         System.out.println("✅ Itinéraire trouvé: " + distance + " km");
+
+                        // Publish event to Kafka
+                        RouteCalculatedEvent event = new RouteCalculatedEvent(
+                                currentStartPlaceName,
+                                currentEndPlaceName,
+                                distance,
+                                duration,
+                                mode);
+                        if (eventProducer != null) {
+                            eventProducer.publishRouteCalculated(event).subscribe();
+                        }
                     }
                 });
     }
@@ -120,34 +136,34 @@ public class RouteService {
         double vitesse = mode.equals("driving") ? 25 : mode.equals("walking") ? 2 : 8;
 
         String query = """
-            WITH chemins AS (
-                SELECT path_id, path_seq, node, edge, cost, agg_cost
-                FROM pgr_ksp(
-                    'SELECT id, source, target, cost, reverse_cost FROM routes WHERE cost IS NOT NULL AND cost > 0 AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)',
-                    :source, :target, 3, false
-                )
-            )
-            SELECT
-                c.path_id,
-                c.path_seq,
-                ST_AsText(r.geom) as geometry,
-                COALESCE(l1.nom, 'Node ' || r.source) as source,
-                COALESCE(l2.nom, 'Node ' || r.target) as target,
-                c.cost as distance
-            FROM chemins c
-            JOIN routes r ON c.edge = r.id
-            LEFT JOIN lieux l1 ON r.source = l1.id
-            LEFT JOIN lieux l2 ON r.target = l2.id
-            WHERE c.edge > 0
-            AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), r.geom)
-            ORDER BY c.path_id, c.path_seq
-        """;
+                    WITH chemins AS (
+                        SELECT path_id, path_seq, node, edge, cost, agg_cost
+                        FROM pgr_ksp(
+                            'SELECT id, source, target, cost, reverse_cost FROM routes WHERE cost IS NOT NULL AND cost > 0 AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)',
+                            :source, :target, 3, false
+                        )
+                    )
+                    SELECT
+                        c.path_id,
+                        c.path_seq,
+                        ST_AsText(r.geom) as geometry,
+                        COALESCE(l1.nom, 'Node ' || r.source) as source,
+                        COALESCE(l2.nom, 'Node ' || r.target) as target,
+                        c.cost as distance
+                    FROM chemins c
+                    JOIN routes r ON c.edge = r.id
+                    LEFT JOIN lieux l1 ON r.source = l1.id
+                    LEFT JOIN lieux l2 ON r.target = l2.id
+                    WHERE c.edge > 0
+                    AND ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), r.geom)
+                    ORDER BY c.path_id, c.path_seq
+                """;
 
         return Mono.from(connectionFactory.create())
                 .flatMapMany(connection -> Flux.from(connection.createStatement(query)
-                                .bind("source", source)
-                                .bind("target", target)
-                                .execute())
+                        .bind("source", source)
+                        .bind("target", target)
+                        .execute())
                         .flatMap(result -> Flux.from(result.map((row, metadata) -> {
                             RouteStep step = new RouteStep();
                             step.setGeometry(row.get("geometry", String.class));
@@ -212,7 +228,7 @@ public class RouteService {
     }
 
     private Route createRoute(List<RouteStep> steps, double distance, double duration,
-                              String startPlaceName, String endPlaceName) {
+            String startPlaceName, String endPlaceName) {
         Route route = new Route();
         route.setDistance(distance);
         route.setDuration(duration);
@@ -257,7 +273,8 @@ public class RouteService {
                 .reduce((a, b) -> a + ";" + b)
                 .orElse("");
 
-        String url = "https://router.project-osrm.org/route/v1/" + profile + "/" + coordinates + "?steps=true&geometries=geojson&alternatives=3";
+        String url = "https://router.project-osrm.org/route/v1/" + profile + "/" + coordinates
+                + "?steps=true&geometries=geojson&alternatives=3";
 
         return webClientBuilder.build()
                 .get()
@@ -401,8 +418,9 @@ public class RouteService {
     }
 
     public Mono<RouteResponse> routeWithDetour(Point start, Point detour, Point end, String mode,
-                                               String startPlaceName, String detourPlaceName, String endPlaceName) {
-        String osrmMode = mode.equals("taxi") || mode.equals("bus") ? "driving" : mode.equals("moto") ? "cycling" : "driving";
+            String startPlaceName, String detourPlaceName, String endPlaceName) {
+        String osrmMode = mode.equals("taxi") || mode.equals("bus") ? "driving"
+                : mode.equals("moto") ? "cycling" : "driving";
 
         if (!isWithinCameroon(start.getLat(), start.getLng()) ||
                 !isWithinCameroon(detour.getLat(), detour.getLng()) ||
@@ -412,25 +430,25 @@ public class RouteService {
 
         return Mono.zip(
                 getRouteFromOSRM(List.of(start, detour), osrmMode),
-                getRouteFromOSRM(List.of(detour, end), osrmMode)
-        ).flatMap(tuple -> {
-            List<Route> firstRoutes = tuple.getT1();
-            List<Route> secondRoutes = tuple.getT2();
+                getRouteFromOSRM(List.of(detour, end), osrmMode)).flatMap(tuple -> {
+                    List<Route> firstRoutes = tuple.getT1();
+                    List<Route> secondRoutes = tuple.getT2();
 
-            if (firstRoutes.isEmpty()) {
-                return Mono.just(createErrorResponse("Aucun itinéraire trouvé de départ à détour"));
-            }
-            if (secondRoutes.isEmpty()) {
-                return Mono.just(createErrorResponse("Aucun itinéraire trouvé de détour à arrivée"));
-            }
+                    if (firstRoutes.isEmpty()) {
+                        return Mono.just(createErrorResponse("Aucun itinéraire trouvé de départ à détour"));
+                    }
+                    if (secondRoutes.isEmpty()) {
+                        return Mono.just(createErrorResponse("Aucun itinéraire trouvé de détour à arrivée"));
+                    }
 
-            Route combinedRoute = combineRoutes(firstRoutes.get(0), secondRoutes.get(0), startPlaceName, endPlaceName);
-            List<Route> combinedRoutes = List.of(combinedRoute);
+                    Route combinedRoute = combineRoutes(firstRoutes.get(0), secondRoutes.get(0), startPlaceName,
+                            endPlaceName);
+                    List<Route> combinedRoutes = List.of(combinedRoute);
 
-            RouteResponse response = new RouteResponse();
-            response.setRoutes(combinedRoutes);
-            return Mono.just(response);
-        }).onErrorResume(e -> Mono.just(createErrorResponse("Erreur calcul détour: " + e.getMessage())));
+                    RouteResponse response = new RouteResponse();
+                    response.setRoutes(combinedRoutes);
+                    return Mono.just(response);
+                }).onErrorResume(e -> Mono.just(createErrorResponse("Erreur calcul détour: " + e.getMessage())));
     }
 
     private Route combineRoutes(Route firstRoute, Route secondRoute, String startPlaceName, String endPlaceName) {
@@ -454,19 +472,18 @@ public class RouteService {
 
     private Mono<Long> findNearestNode(Point point) {
         String query = """
-            SELECT id FROM lieux 
-            WHERE ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)
-            ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lng, :lat), 4326) 
-            LIMIT 1
-        """;
+                    SELECT id FROM lieux
+                    WHERE ST_Contains(ST_SetSRID(ST_MakeBox2D(ST_Point(8.4, 1.65), ST_Point(16.2, 13.08)), 4326), geom)
+                    ORDER BY geom <-> ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)
+                    LIMIT 1
+                """;
 
         return Mono.from(connectionFactory.create())
                 .flatMap(connection -> Mono.from(connection.createStatement(query)
-                                .bind("lng", point.getLng())
-                                .bind("lat", point.getLat())
-                                .execute())
-                        .flatMap(result -> Mono.from(result.map((row, metadata) ->
-                                row.get("id", Long.class))))
+                        .bind("lng", point.getLng())
+                        .bind("lat", point.getLat())
+                        .execute())
+                        .flatMap(result -> Mono.from(result.map((row, metadata) -> row.get("id", Long.class))))
                         .doFinally(signal -> Mono.from(connection.close())))
                 .switchIfEmpty(Mono.error(new Exception("Aucun nœud trouvé")));
     }

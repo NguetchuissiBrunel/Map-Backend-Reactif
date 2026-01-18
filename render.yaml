@@ -1,0 +1,20 @@
+services:
+  - type: web
+    name: mp-reactif
+    env: docker
+    plan: free
+    branch: main
+    envVars:
+      - key: SPRING_R2DBC_URL
+        fromDatabase:
+          name: farcal_db_p8ex
+          property: connectionString
+      - key: SPRING_REDIS_HOST
+        sync: false
+      - key: SPRING_REDIS_PORT
+        sync: false
+      - key: SPRING_REDIS_PASSWORD
+        sync: false
+      - key: SPRING_KAFKA_BOOTSTRAP_SERVERS
+        sync: false
+    autoDeploy: true
