@@ -7,7 +7,7 @@ services:
     envVars:
       - key: SPRING_R2DBC_URL
         fromDatabase:
-          name: farcal_db_p8ex
+          name: farcal_lieux
           property: connectionString
       - key: SPRING_REDIS_HOST
         sync: false
