@@ -5,10 +5,7 @@ services:
     plan: free
     branch: main
     envVars:
-      - key: SPRING_R2DBC_URL
-        fromDatabase:
-          name: farcal_lieux
-          property: connectionString
+
       - key: SPRING_REDIS_HOST
         sync: false
       - key: SPRING_REDIS_PORT
